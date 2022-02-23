@@ -29,18 +29,20 @@ class RewardNetwork(nn.Module):
 	def compute_return(self, traj):
 		estimated_rewards = self.main(traj)
 		sum_rewards = torch.sum(estimated_rewards)
-		sum_abs_rewards = torch.sum(torch.abs(estimated_rewards))
 
-		return sum_rewards, sum_abs_rewards
+		# regularizer = torch.abs((len(traj) / sum_rewards) - 1.)
+		regularizer = len(traj) / sum_rewards
+
+		return sum_rewards, regularizer
 
 	def compute_reward(self, state):
 		return self.main(state)
 
 	def forward(self, traj_i, traj_j):
-		r_i, abs_r_i = self.compute_return(traj_i)
-		r_j, abs_r_j = self.compute_return(traj_j)
+		r_i, regularizer_r_i = self.compute_return(traj_i)
+		r_j, regularizer_r_j = self.compute_return(traj_j)
 
-		return torch.cat((r_i.unsqueeze(0), r_j.unsqueeze(0)), 0), abs_r_i + abs_r_j
+		return torch.cat((r_i.unsqueeze(0), r_j.unsqueeze(0)), 0), regularizer_r_i + regularizer_r_j
 
 
 class MLRE:
@@ -119,9 +121,9 @@ class MLRE:
 
 					self.optimizer_task.zero_grad()
 
-					outputs, abs_rewards = self.task_network.forward(traj_i, traj_j)
+					outputs, regularizer = self.task_network.forward(traj_i, traj_j)
 					outputs = outputs.unsqueeze(0)
-					loss = loss_criterion(outputs, label.long())
+					loss = loss_criterion(outputs, label.long()) + regularizer
 					loss.backward()
 					self.optimizer_task.step()
 
@@ -136,9 +138,9 @@ class MLRE:
 					traj_j = torch.from_numpy(traj_j[::self.skip_state]).float().to(self.device)
 					label = torch.from_numpy(label).to(self.device)
 
-					outputs, abs_rewards = self.task_network.forward(traj_i, traj_j)
+					outputs, regularizer = self.task_network.forward(traj_i, traj_j)
 					outputs = outputs.unsqueeze(0)
-					loss = loss_criterion(outputs, label.long()) + torch.relu(-1. * outputs).sum()
+					loss = loss_criterion(outputs, label.long()) + regularizer
 					qry_loss += loss
 
 				''' update the meta network '''
@@ -155,17 +157,21 @@ class MLRE:
 		print('INFO: Loading training data......')
 		all_trajs, all_pair_sets = self.load_dataset()
 		print('INFO: Meta Training......')
-		self.meta_train(all_trajs, all_pair_sets)
+		# self.meta_train(all_trajs, all_pair_sets)
 
 		spt_set = all_pair_sets[self.env_name]['spt_set']
 		qry_set = all_pair_sets[self.env_name]['qry_set']
 		trajs = all_trajs[self.env_name]
 
 		for epoch in range(self.finetune_epoch):
-			total_loss = 0.
+			total_rank_loss = 0.
+			total_actual_loss = 0.
 			for idx, (i, j, label) in enumerate(spt_set):
 				traj_i = trajs['states'][i]
 				traj_j = trajs['states'][j]
+				traj_i_tr = sum(trajs['rewards'][i][::self.skip_state])
+				traj_j_tr = sum(trajs['rewards'][j][::self.skip_state])
+				tr = torch.from_numpy(np.array([traj_i_tr, traj_j_tr]))
 				label = np.array([label])
 				traj_i = torch.from_numpy(traj_i[::self.skip_state]).float().to(self.device)
 				traj_j = torch.from_numpy(traj_j[::self.skip_state]).float().to(self.device)
@@ -173,15 +179,18 @@ class MLRE:
 
 				self.optimizer_meta.zero_grad()
 
-				outputs, abs_rewards = self.meta_network.forward(traj_i, traj_j)
+				outputs, regularizer = self.meta_network.forward(traj_i, traj_j)
 				outputs = outputs.unsqueeze(0)
-				''' punishments for negative outputs '''
-				loss = loss_criterion(outputs, label.long()) + torch.relu(-1. * outputs).sum()
-				loss.backward()
+				''' punishments for unnormal outputs '''
+				rank_loss = loss_criterion(outputs, label.long())
+				(rank_loss + regularizer).backward()
+				actual_loss = torch.abs(torch.sum(outputs.detach().cpu() - tr))
 				self.optimizer_meta.step()
 
-				item_loss = loss.item()
-				total_loss += item_loss
+				item_rank_loss = rank_loss.item()
+				item_actual_loss = actual_loss.item()
+				total_rank_loss += item_rank_loss
+				total_actual_loss += item_actual_loss
 
 			with torch.no_grad():
 				total_eval_loss = 0.0
@@ -193,14 +202,15 @@ class MLRE:
 					traj_j = torch.from_numpy(traj_j[::self.skip_state]).float().to(self.device)
 					label = torch.from_numpy(label).to(self.device)
 
-					outputs, abs_rewards = self.meta_network.forward(traj_i, traj_j)
+					outputs, regularizer = self.meta_network.forward(traj_i, traj_j)
 					outputs = outputs.unsqueeze(0)
 					eval_loss = loss_criterion(outputs, label.long())
 					item_loss = eval_loss.item()
 					total_eval_loss += item_loss
+			total_eval_loss = 0.
 
-			print('INFO: Fine-tuning epoch {} total loss {:.3f} eval loss {:.3f}'.format(epoch, total_loss,
-			                                                                             total_eval_loss))
+			print('INFO: Fine-tuning epoch {} total rank loss {:.3f} total actual loss {:.3f} eval loss {:.3f}'.format(
+				epoch, total_rank_loss, total_actual_loss, total_eval_loss))
 
 		print('INFO: Training finished! Saving model......')
 
@@ -217,14 +227,14 @@ if __name__ == '__main__':
 	device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
 	mlre = MLRE(
 		training_tasks=['Assault', 'Breakout', 'BeamRider', 'KungFuMaster', 'Phoenix', 'SpaceInvaders'],
-		testing_task='Phoenix',
+		testing_task='SpaceInvaders',
 		meta_epoch=10,
 		finetune_epoch=100,
 		alpha=0.0005,
 		beta=0.0001,
 		device=device,
 		save_dir='./models',
-		trajs_dir='./trajs/30episodes',
+		trajs_dir='./trajs/50episodes',
 		skip_state=3
 	)
 	mlre.train()
