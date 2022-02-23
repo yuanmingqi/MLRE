@@ -148,7 +148,7 @@ def main():
 
 			''' compute rewards '''
 			for process in range(args.num_processes):
-				rollouts.rewards[:, process, :] = learned_reward.compute_reward(rollouts.obs[:args.num_steps, process, :, :, :])
+				rollouts.rewards[:, process, :] = torch.sign(learned_reward.compute_reward(rollouts.obs[:args.num_steps, process, :, :, :]))
 			rollouts.compute_returns(next_value, args.use_gae, args.gamma,
 			                         args.gae_lambda, args.use_proper_time_limits)
 
