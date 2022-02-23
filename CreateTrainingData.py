@@ -20,7 +20,7 @@ def create_training_data(
 	pair_set = list()
 	for (i, j) in combinations(range(num_trajs), 2):
 		ti_return = sum(trajs['rewards'][i][::skip_state])
-		tj_return = sum(trajs['rewards'][i][::skip_state])
+		tj_return = sum(trajs['rewards'][j][::skip_state])
 		if ti_return > tj_return:
 			label = 0.
 		else:
