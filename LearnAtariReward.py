@@ -157,12 +157,13 @@ class MLRE:
 		print('INFO: Loading training data......')
 		all_trajs, all_pair_sets = self.load_dataset()
 		print('INFO: Meta Training......')
-		# self.meta_train(all_trajs, all_pair_sets)
+		self.meta_train(all_trajs, all_pair_sets)
 
 		spt_set = all_pair_sets[self.env_name]['spt_set']
 		qry_set = all_pair_sets[self.env_name]['qry_set']
 		trajs = all_trajs[self.env_name]
 
+		monitor = 1e10
 		for epoch in range(self.finetune_epoch):
 			total_rank_loss = 0.
 			total_actual_loss = 0.
@@ -183,7 +184,7 @@ class MLRE:
 				outputs = outputs.unsqueeze(0)
 				''' punishments for unnormal outputs '''
 				rank_loss = loss_criterion(outputs, label.long())
-				(rank_loss + regularizer).backward()
+				(rank_loss).backward()
 				actual_loss = torch.abs(torch.sum(outputs.detach().cpu() - tr))
 				self.optimizer_meta.step()
 
@@ -191,6 +192,10 @@ class MLRE:
 				item_actual_loss = actual_loss.item()
 				total_rank_loss += item_rank_loss
 				total_actual_loss += item_actual_loss
+
+			if total_actual_loss < monitor:
+				monitor = total_actual_loss
+				self.save()
 
 			with torch.no_grad():
 				total_eval_loss = 0.0
@@ -207,13 +212,13 @@ class MLRE:
 					eval_loss = loss_criterion(outputs, label.long())
 					item_loss = eval_loss.item()
 					total_eval_loss += item_loss
-			total_eval_loss = 0.
+			# total_eval_loss = 0.
 
 			print('INFO: Fine-tuning epoch {} total rank loss {:.3f} total actual loss {:.3f} eval loss {:.3f}'.format(
 				epoch, total_rank_loss, total_actual_loss, total_eval_loss))
 
-		print('INFO: Training finished! Saving model......')
-
+	def save(self):
+		print('INFO: Saving the best model......')
 		try:
 			os.makedirs(self.save_dir)
 		except OSError:
@@ -228,8 +233,8 @@ if __name__ == '__main__':
 	mlre = MLRE(
 		training_tasks=['Assault', 'Breakout', 'BeamRider', 'KungFuMaster', 'Phoenix', 'SpaceInvaders'],
 		testing_task='SpaceInvaders',
-		meta_epoch=10,
-		finetune_epoch=100,
+		meta_epoch=50,
+		finetune_epoch=200,
 		alpha=0.0005,
 		beta=0.0001,
 		device=device,
